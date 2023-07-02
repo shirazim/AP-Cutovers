@@ -1,0 +1,154 @@
+#!/usr/bin/env python
+#Author: Michael Shirazi
+#Date: 6/18/2023
+
+import paramiko
+import getpass
+import time
+import sys
+
+print(r"""\
+                 ____
+            .-'""p 8o""`-.
+         .-'8888P'Y.`Y[ ' `-.
+       ,']88888b.J8oo_      '`.
+     ,' ,88888888888["        Y`.
+    /   8888888888P            Y8\
+   /    Y8888888P'             ]88\
+  :     `Y88'   P              `888:
+  :       Y8.oP '- >            Y88:
+  |          `Yb  __             `'|
+  :            `'d8888bo.          :
+  :             d88888888ooo.      ;
+   \            Y88888888888P     /
+    \            `Y88888888P     /
+     `.            d88888P'    ,'
+       `.          888PP'    ,'
+AP       `-.      d8P'    ,-'   
+CUTOVER     `-.,,_'__,,.-'
+SCRIPT
+
+ """)
+number = input("Enter the site number: ")
+number = str(number).rjust(7,'0')
+
+# SSH connection details
+hostname = "site"+number+"des1"
+username = getpass.getuser()
+password = getpass.getpass(prompt="Enter your password: ")
+
+# Establish SSH connection
+ssh_client = paramiko.SSHClient()
+ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+try:
+    ssh_client.connect(hostname, username=username, password=password)
+    remoteconnect = ssh_client.invoke_shell()
+    output = remoteconnect.recv(65535)
+except:
+    print("could not connect to " + hostname)
+    sys.exit
+
+remoteconnect.send("show cdp nei\n")
+time.sleep(1)
+cdpneighbors = remoteconnect.recv(65535).decode("utf-8")
+
+remoteconnect.send(" ")
+remoteconnect.send(" ")
+time.sleep(1)
+cdpneighbors += remoteconnect.recv(65535).decode("utf-8")
+
+switches = cdpneighbors.split("\n")
+allswitches = []
+uniqueswitches = set()
+uniqueswitches.add(hostname)
+for switch in switches:
+    try:
+        switch = switch.split()
+        if "s0" in switch[0] and ".domain.org" in switch[0]:
+            uniqueswitches.add(switch[0])
+    except:
+        pass
+
+# Close SSH connection
+ssh_client.close()
+
+for device in uniqueswitches:
+    # Establish SSH connection
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh_client.connect(device, username=username, password=password)
+    try:
+        remoteconnect = ssh_client.invoke_shell()
+        output = remoteconnect.recv(65535)
+    except:
+        print("unable to access " + device)
+        continue
+    print("Updating " + device)
+    remoteconnect.send("Show int status | i AP\n")
+    time.sleep(1)
+    remoteconnect.send(" ")
+    remoteconnect.send(" ")
+    time.sleep(1)
+    remoteconnect.send(" ")
+    remoteconnect.send(" ")
+    time.sleep(1)
+    output += remoteconnect.recv(65535).decode("utf-8")
+
+    lines = output.split("\n")
+    matching_interfaces = []
+    connectedinterfaces = []
+
+    remoteconnect.send("conf t\n")
+    time.sleep(1)
+    output = remoteconnect.recv(65535)
+    remoteconnect.send("cdp run\n")
+    time.sleep(2)
+
+    if "fl1s01" in device:
+        remoteconnect.send("vlan <VLAN #>\n")
+        time.sleep(1)
+        output = remoteconnect.recv(65535)
+        remoteconnect.send("exit\n")
+        time.sleep(1)
+        output = remoteconnect.recv(65535)
+        remoteconnect.send("int range gi1/1/1,gi2/1/1\n")
+        time.sleep(3)
+        remoteconnect.send("switchport trunk allowed vlan add <VLAN #>\n")
+        time.sleep(2)
+        remoteconnect.send("exit\n")
+        time.sleep(1)
+
+    for interface_config in lines:
+        try:
+            config_parts = interface_config.split()
+            if "AP" in config_parts[1]:
+                matching_interfaces.append(config_parts[0])
+                if "connected" in config_parts[2]:
+                    print(config_parts[0] + " has a connected interface status. There may still be an old AP plugged into this port")   
+            elif "--More--" in config_parts[0]:
+                data = config_parts[2]
+                matching_interfaces.append(data[9:17]) 
+                if "connected" in config_parts[4]:
+                    print(config_parts[2] + " has a connected interface status. There may still be an old AP plugged into this port")  
+        except:
+            pass
+    # Close SSH connection
+    for APint in matching_interfaces:
+        remoteconnect.send("int " + APint + "\n")
+        time.sleep(1)
+        remoteconnect.send("speed 100\n")
+        time.sleep(1)
+        remoteconnect.send("duplex full\n")
+        time.sleep(1)
+        remoteconnect.send("description New_AP\n")
+        time.sleep(1)
+        remoteconnect.send("switchport trunk allowed vlan 100,200,300,400\n")
+        time.sleep(2)
+        output = remoteconnect.recv(65535)
+
+    remoteconnect.send("end\n")
+    time.sleep(1)
+    remoteconnect.send("wr\n")
+    time.sleep(2)
+    ssh_client.close() 
+print("The script has ran successfully")
